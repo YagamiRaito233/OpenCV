@@ -28,16 +28,9 @@ import com.hntek.android.opencv.camera.FrameProcessor
 import com.hntek.android.opencv.utils.FaceDetector
 import com.hntek.android.opencv.utils.FaceMatcher
 import com.hntek.android.opencv.utils.OpenCVHelper
+import com.hntek.android.opencv.utils.FaceVerificationResult
 import java.io.InputStream
 import kotlinx.coroutines.delay
-
-/**
- * 页面枚举
- */
-private enum class FacePage {
-    Main,  // 主界面
-    Crop   // 身份证取景界面
-}
 
 /**
  * 人脸比对主界面
@@ -51,18 +44,13 @@ fun FaceComparisonScreen() {
     // OpenCV初始化状态
     var openCVInitialized by remember { mutableStateOf(false) }
     
-    // 当前页面
-    var currentPage by remember { mutableStateOf(FacePage.Main) }
-    
-    // 原始身份证照片（用于取景页面）
-    var rawIdCardBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    
-    // 取景完成后的身份证头像（主界面显示）
-    var croppedIdCardBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    
+    // 身份证照片
+    var idCardBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
     // 比对结果（用于稳定显示）
     var displayedSimilarity by remember { mutableStateOf<Double?>(null) }
     var isMatching by remember { mutableStateOf(false) }
+    var verificationResult by remember { mutableStateOf<FaceVerificationResult?>(null) }
     
     // 检测到的人脸数量（稳定显示，避免闪烁）
     var detectedFaceCount by remember { mutableStateOf(0) }
@@ -96,7 +84,22 @@ fun FaceComparisonScreen() {
             cameraManager = CameraManager(context, previewView, lifecycleOwner)
             frameProcessor = FrameProcessor(faceDetector!!, faceMatcher!!)
             
-            // 设置帧处理回调：只在“有新结果”时更新，避免闪烁
+            // 设置帧处理回调：使用新的多重条件验证结果
+            frameProcessor?.onVerificationResult = { result ->
+                if (result.confidence.isFinite() && result.confidence >= 0.0) {
+                    // 轻量平滑（EMA），让数值更稳定
+                    displayedSimilarity = if (displayedSimilarity == null) {
+                        result.confidence
+                    } else {
+                        displayedSimilarity!! * 0.7 + result.confidence * 0.3
+                    }
+                    // 使用多重条件验证的结果
+                    isMatching = result.isPass
+                    verificationResult = result
+                }
+            }
+            
+            // 向后兼容：保留旧的回调
             frameProcessor?.onComparisonResult = { similarity ->
                 if (similarity.isFinite() && similarity >= 0.0) {
                     // 轻量平滑（EMA），让数值更稳定
@@ -105,7 +108,9 @@ fun FaceComparisonScreen() {
                     } else {
                         displayedSimilarity!! * 0.7 + similarity * 0.3
                     }
-                    isMatching = (displayedSimilarity ?: similarity) >= 0.75
+                    // 使用FrameProcessor中的阈值进行判断（向后兼容）
+                    val threshold = frameProcessor?.similarityThreshold ?: 0.75
+                    isMatching = (displayedSimilarity ?: similarity) >= threshold
                 }
             }
             
@@ -157,15 +162,6 @@ fun FaceComparisonScreen() {
             faceMatcher?.release()
         }
     }
-
-    // 根据当前页面启停相机：进入身份证取景页时暂停预览，返回主界面时重新启动
-    LaunchedEffect(currentPage) {
-        if (currentPage == FacePage.Main) {
-            cameraManager?.startCamera()
-        } else {
-            cameraManager?.stopCamera()
-        }
-    }
     
     // 图片选择器
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -177,78 +173,14 @@ fun FaceComparisonScreen() {
                 val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
                 inputStream?.close()
                 
-                if (bitmap != null) {
-                    rawIdCardBitmap = bitmap
-                    // 进入取景页面
-                    currentPage = FacePage.Crop
-                }
+                idCardBitmap = bitmap
+                frameProcessor?.setIdCardImage(bitmap)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
-    
-    
-    // 根据当前页面显示不同内容
-    when (currentPage) {
-        FacePage.Main -> {
-            MainComparisonScreen(
-                openCVInitialized = openCVInitialized,
-                croppedIdCardBitmap = croppedIdCardBitmap,
-                previewView = previewView,
-                viewportRect = viewportRect,
-                previewSize = previewSize,
-                detectedFaceCount = detectedFaceCount,
-                displayedSimilarity = displayedSimilarity,
-                isMatching = isMatching,
-                frameProcessor = frameProcessor,
-                imagePickerLauncher = imagePickerLauncher,
-                onViewportRectChanged = { rect, size ->
-                    viewportRect = rect
-                    previewSize = size
-                }
-            )
-        }
-        FacePage.Crop -> {
-            rawIdCardBitmap?.let { bitmap ->
-                IdCardCropScreen(
-                    originalBitmap = bitmap,
-                    faceDetector = faceDetector,
-                    onConfirm = { croppedBitmap: Bitmap ->
-                        croppedIdCardBitmap = croppedBitmap
-                        frameProcessor?.setIdCardImage(croppedBitmap)
-                        currentPage = FacePage.Main
-                    },
-                    onCancel = {
-                        currentPage = FacePage.Main
-                    }
-                )
-            } ?: run {
-                // 如果没有原始图片，返回主界面
-                currentPage = FacePage.Main
-            }
-        }
-    }
-}
 
-/**
- * 主比对界面
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MainComparisonScreen(
-    openCVInitialized: Boolean,
-    croppedIdCardBitmap: Bitmap?,
-    previewView: PreviewView,
-    viewportRect: android.graphics.Rect?,
-    previewSize: android.util.Size?,
-    detectedFaceCount: Int,
-    displayedSimilarity: Double?,
-    isMatching: Boolean,
-    frameProcessor: FrameProcessor?,
-    imagePickerLauncher: androidx.activity.result.ActivityResultLauncher<String>,
-    onViewportRectChanged: (android.graphics.Rect?, android.util.Size?) -> Unit
-) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -307,7 +239,7 @@ private fun MainComparisonScreen(
                                 val frameX = centerX - radius
                                 val frameY = centerY - radius
                                 
-                                val rect = android.graphics.Rect(
+                                viewportRect = android.graphics.Rect(
                                     frameX.toInt(),
                                     frameY.toInt(),
                                     (frameX + diameter).toInt(),
@@ -315,13 +247,10 @@ private fun MainComparisonScreen(
                                 )
                                 
                                 // 获取相机预览的实际分辨率
-                                val size = android.util.Size(
+                                previewSize = android.util.Size(
                                     previewView.width,
                                     previewView.height
                                 )
-                                
-                                // 使用回调函数更新状态
-                                onViewportRectChanged(rect, size)
                             }
                     )
                     
@@ -393,18 +322,33 @@ private fun MainComparisonScreen(
                                     style = MaterialTheme.typography.headlineMedium,
                                     color = Color.White
                                 )
+                                // 显示验证详情（如果有多重条件验证结果）
+                                verificationResult?.let { result ->
+                                    Text(
+                                        text = "检查: ${result.passedChecks}/${result.totalChecks}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.White.copy(alpha = 0.8f)
+                                    )
+                                    if (!result.isPass && result.passedChecks < result.totalChecks) {
+                                        Text(
+                                            text = "未通过条件验证",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.White.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 
-                // 身份证照片显示区域（只显示取好景的头像）
+                // 身份证照片显示区域
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 身份证头像预览（只读显示）
+                    // 身份证照片预览
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -412,10 +356,10 @@ private fun MainComparisonScreen(
                             .background(Color.Gray.copy(alpha = 0.3f), RoundedCornerShape(8.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (croppedIdCardBitmap != null) {
+                        if (idCardBitmap != null) {
                             Image(
-                                bitmap = croppedIdCardBitmap.asImageBitmap(),
-                                contentDescription = "身份证头像",
+                                bitmap = idCardBitmap!!.asImageBitmap(),
+                                contentDescription = "身份证照片",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
                             )
@@ -423,7 +367,7 @@ private fun MainComparisonScreen(
                             Text("未选择身份证照片", color = Color.Gray)
                         }
                     }
-                    
+
                     // 选择身份证照片按钮
                     Button(
                         onClick = { imagePickerLauncher.launch("image/*") },
@@ -445,7 +389,7 @@ private fun MainComparisonScreen(
                 )
                 
                 // 显示身份证照片人脸数量
-                if (croppedIdCardBitmap != null) {
+                if (idCardBitmap != null) {
                     val idCardFaceCount = frameProcessor?.idCardFaceCount ?: 0
                     Text(
                         text = if (idCardFaceCount == 1) {

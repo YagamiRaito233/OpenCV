@@ -10,6 +10,7 @@ import org.opencv.imgproc.Imgproc
 import com.hntek.android.opencv.utils.FaceDetector
 import com.hntek.android.opencv.utils.FaceMatcher
 import com.hntek.android.opencv.utils.OpenCVHelper
+import com.hntek.android.opencv.utils.FaceVerificationResult
 
 /**
  * 帧处理器
@@ -20,11 +21,11 @@ class FrameProcessor(
     private val faceMatcher: FaceMatcher
 ) {
     private val tag = "FrameProcessor"
-    
+
     // 身份证照片的Mat（用于比对）
     private var idCardFaceMat: Mat? = null
     private var idCardProcessedFace: Mat? = null
-    
+
     // 身份证照片中的人脸数量
     var idCardFaceCount: Int = 0
         private set
@@ -32,17 +33,22 @@ class FrameProcessor(
     // 身份证照片是否启用“中心取景框”(ROI)裁剪
     var idCardRoiEnabled: Boolean = true
         private set
-    
-    // 比对阈值（75%）
+
+    // 比对阈值（向后兼容，实际使用FaceMatcher中的多重条件验证）
     var similarityThreshold = 0.75
-    
+
     // 取景框区域（用于限制检测范围）
     var viewportRect: android.graphics.Rect? = null
     var previewSize: android.util.Size? = null
-    
+
+    // 人脸质量过滤参数
+    var minFaceSize: Int = 100  // 最小人脸尺寸（像素）
+    var maxFaceSize: Int = 800  // 最大人脸尺寸（像素）
+
     // 回调接口
     var onFaceDetected: ((List<android.graphics.Rect>) -> Unit)? = null
-    var onComparisonResult: ((Double) -> Unit)? = null
+    var onComparisonResult: ((Double) -> Unit)? = null  // 向后兼容
+    var onVerificationResult: ((FaceVerificationResult) -> Unit)? = null  // 新的详细结果回调
 
     /**
      * 设置身份证照片用于比对
@@ -50,13 +56,33 @@ class FrameProcessor(
      */
     fun setIdCardImage(idCardBitmap: Bitmap) {
         try {
-            // 这里不再二次裁剪/严格过滤，直接使用「取景后」的整张身份证头像
-            // 用户已经在取景页面手动把人脸对齐到中心，因此只需要做一次普通检测即可
-            val faces = faceDetector.detectFaces(idCardBitmap, strictMode = false)
-            idCardFaceCount = faces.size
-            
+            Log.d(tag, "开始处理身份证照片，尺寸: ${idCardBitmap.width}x${idCardBitmap.height}")
+
+            // 先尝试不裁剪直接检测（身份证照片通常人脸在中心，不需要裁剪）
+            var faces = faceDetector.detectFaces(idCardBitmap, strictMode = true)
+            var workingBitmap = idCardBitmap
+            var usedRoi = false
+
+            // 如果未检测到人脸，尝试使用ROI裁剪（如果启用）
+            if (faces.isEmpty() && idCardRoiEnabled) {
+                Log.d(tag, "未检测到人脸，尝试使用ROI裁剪")
+                val roiBitmap = cropCenterSquare(idCardBitmap, 0.90f) // 增大裁剪比例到90%
+                faces = faceDetector.detectFaces(roiBitmap, strictMode = true)
+                workingBitmap = roiBitmap
+                usedRoi = true
+            }
+
+            // 如果仍然未检测到，尝试非严格模式
             if (faces.isEmpty()) {
-                Log.w(tag, "身份证照片中未检测到人脸")
+                Log.d(tag, "严格模式未检测到人脸，尝试非严格模式")
+                faces = faceDetector.detectFaces(workingBitmap, strictMode = false)
+            }
+
+            idCardFaceCount = faces.size
+            Log.d(tag, "检测到 ${faces.size} 个人脸 (使用ROI: $usedRoi)")
+
+            if (faces.isEmpty()) {
+                Log.w(tag, "身份证照片中未检测到人脸，请检查照片质量")
                 idCardFaceMat = null
                 idCardProcessedFace = null
                 return
@@ -65,10 +91,12 @@ class FrameProcessor(
             // 只有检测到1个人脸时才提取
             if (faces.size == 1) {
                 // 提取第一个人脸
-                val idCardMat = OpenCVHelper.bitmapToMat(idCardBitmap)
+                val idCardMat = OpenCVHelper.bitmapToMat(workingBitmap)
                 val faceRect = faces[0]
+                Log.d(tag, "人脸位置: x=${faceRect.x}, y=${faceRect.y}, w=${faceRect.width}, h=${faceRect.height}")
+
                 val extractedFace = faceDetector.extractFaceRegion(idCardMat, faceRect)
-                
+
                 if (extractedFace != null) {
                     // 预处理
                     idCardProcessedFace = faceDetector.preprocessFace(extractedFace)
@@ -77,12 +105,22 @@ class FrameProcessor(
                     Log.w(tag, "无法提取身份证人脸")
                     idCardProcessedFace = null
                 }
-                
+
                 idCardMat.release()
                 extractedFace?.release()
+
+                // 如果使用了ROI裁剪的临时bitmap，需要释放
+                if (usedRoi && workingBitmap != idCardBitmap) {
+                    workingBitmap.recycle()
+                }
             } else {
                 Log.w(tag, "身份证照片中检测到${faces.size}个人脸，需要恰好1个人脸")
                 idCardProcessedFace = null
+
+                // 如果使用了ROI裁剪的临时bitmap，需要释放
+                if (usedRoi && workingBitmap != idCardBitmap) {
+                    workingBitmap.recycle()
+                }
             }
         } catch (e: Exception) {
             Log.e(tag, "设置身份证照片失败: ${e.message}", e)
@@ -119,12 +157,12 @@ class FrameProcessor(
             // 检测人脸
             val allFaces = faceDetector.detectFaces(resultMat)
             var faces = allFaces
-            
+
             // 如果设置了取景框，只保留取景框内的人脸
             if (viewportRect != null && previewSize != null) {
                 faces = filterFacesInViewport(allFaces, viewportRect!!, previewSize!!, frameMat.width(), frameMat.height())
             }
-            
+
             // 转换为人脸矩形列表（Android Rect格式，用于UI显示）
             val androidRects = faces.map { rect ->
                 android.graphics.Rect(
@@ -134,29 +172,38 @@ class FrameProcessor(
                     rect.y + rect.height
                 )
             }
-            
+
             // 通知UI更新
             onFaceDetected?.invoke(androidRects)
 
             // 只有在检测到1个人脸且身份证照片也有1个人脸时，才进行比对
             if (faces.size == 1 && idCardFaceCount == 1 && idCardProcessedFace != null) {
                 val faceRect = faces[0]
-                val extractedFace = faceDetector.extractFaceRegion(resultMat, faceRect)
-                
-                if (extractedFace != null) {
-                    val processedFace = faceDetector.preprocessFace(extractedFace)
-                    
-                    // 比对
-                    val similarity = faceMatcher.compareFaces(processedFace, idCardProcessedFace!!)
-                    
-                    // 通知比对结果
-                    onComparisonResult?.invoke(similarity)
-                    
-                    // 在图像上绘制结果
-                    drawComparisonResult(resultMat, faceRect, similarity)
-                    
-                    processedFace.release()
-                    extractedFace.release()
+
+                // 质量过滤：检查人脸尺寸是否合理
+                if (isFaceQualityAcceptable(faceRect)) {
+                    val extractedFace = faceDetector.extractFaceRegion(resultMat, faceRect)
+
+                    if (extractedFace != null) {
+                        val processedFace = faceDetector.preprocessFace(extractedFace)
+
+                        // 使用新的多重条件验证方法
+                        val verificationResult = faceMatcher.verifyFaces(processedFace, idCardProcessedFace!!)
+
+                        // 向后兼容：通知旧的比对结果（使用加权分）
+                        onComparisonResult?.invoke(verificationResult.confidence)
+
+                        // 新的详细结果回调
+                        onVerificationResult?.invoke(verificationResult)
+
+                        // 在图像上绘制结果（明确使用FaceVerificationResult版本）
+                        drawComparisonResultWithResult(resultMat, faceRect, verificationResult)
+
+                        processedFace.release()
+                        extractedFace.release()
+                    }
+                } else {
+                    Log.d(tag, "人脸质量不符合要求，跳过比对")
                 }
             }
 
@@ -186,7 +233,74 @@ class FrameProcessor(
     }
 
     /**
-     * 绘制比对结果
+     * 检查人脸质量是否可接受
+     * @param faceRect 人脸矩形
+     * @return 如果质量可接受返回true
+     */
+    private fun isFaceQualityAcceptable(faceRect: org.opencv.core.Rect): Boolean {
+        val faceSize = maxOf(faceRect.width, faceRect.height)
+
+        // 检查人脸尺寸是否在合理范围内
+        if (faceSize < minFaceSize || faceSize > maxFaceSize) {
+            Log.d(tag, "人脸尺寸不符合要求: $faceSize (要求: $minFaceSize-$maxFaceSize)")
+            return false
+        }
+
+        // 检查宽高比是否合理（人脸通常是接近正方形的）
+        val aspectRatio = faceRect.width.toDouble() / faceRect.height
+        if (aspectRatio < 0.5 || aspectRatio > 2.0) {
+            Log.d(tag, "人脸宽高比不合理: $aspectRatio")
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * 绘制比对结果（使用新的验证结果）
+     */
+    private fun drawComparisonResultWithResult(
+        mat: Mat,
+        faceRect: org.opencv.core.Rect,
+        result: FaceVerificationResult
+    ) {
+        val color = if (result.isPass) {
+            Scalar(0.0, 255.0, 0.0)  // 绿色：匹配
+        } else {
+            Scalar(0.0, 0.0, 255.0)  // 红色：不匹配
+        }
+
+        // 绘制边框
+        Imgproc.rectangle(
+            mat,
+            Point(faceRect.x.toDouble(), faceRect.y.toDouble()),
+            Point((faceRect.x + faceRect.width).toDouble(), (faceRect.y + faceRect.height).toDouble()),
+            color,
+            4
+        )
+
+        // 绘制相似度文本（显示加权分和通过状态）
+        val statusText = if (result.isPass) "通过" else "未通过"
+        val text = String.format("%s: %.1f%% (%d/%d)",
+            statusText,
+            result.confidence * 100,
+            result.passedChecks,
+            result.totalChecks
+        )
+        val textPosition = Point(faceRect.x.toDouble(), (faceRect.y - 10).toDouble())
+        Imgproc.putText(
+            mat,
+            text,
+            textPosition,
+            Imgproc.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            color,
+            2
+        )
+    }
+
+    /**
+     * 绘制比对结果（向后兼容的旧方法）
      */
     private fun drawComparisonResult(
         mat: Mat,
@@ -277,7 +391,7 @@ class FrameProcessor(
 
         return if (best != null && isInside(best, 0.7)) listOf(best) else emptyList()
     }
-    
+
     /**
      * 释放资源
      */

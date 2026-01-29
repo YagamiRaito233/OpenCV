@@ -9,7 +9,6 @@ import org.opencv.imgproc.Imgproc
 import org.opencv.objdetect.CascadeClassifier
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 
 /**
  * 人脸检测工具类
@@ -33,7 +32,7 @@ class FaceDetector(private val context: Context) {
                 val inputStream = context.assets.open("haarcascade_frontalface_default.xml")
                 val cascadeDir = context.getDir("cascade", Context.MODE_PRIVATE)
                 val cascadeFile = File(cascadeDir, "haarcascade_frontalface_default.xml")
-                
+
                 val outputStream = FileOutputStream(cascadeFile)
                 val buffer = ByteArray(4096)
                 var bytesRead: Int
@@ -97,7 +96,7 @@ class FaceDetector(private val context: Context) {
             } else {
                 Size(30.0, 30.0)
             }
-            
+
             val maxSize = if (strictMode) {
                 // 身份证照片中，人脸通常不超过图像宽度的60%
                 val maxFaceSize = (minOf(bitmap.width, bitmap.height) * 0.6).toDouble()
@@ -119,12 +118,12 @@ class FaceDetector(private val context: Context) {
             )
 
             var faceList = faces.toList()
-            
+
             // 严格模式：过滤不合理的人脸检测结果
             if (strictMode && faceList.isNotEmpty()) {
                 faceList = filterValidFaces(faceList, bitmap.width, bitmap.height)
             }
-            
+
             // 释放资源
             mat.release()
             grayMat.release()
@@ -175,7 +174,7 @@ class FaceDetector(private val context: Context) {
             val faceCenterY = face.y + face.height / 2.0
             val offsetX = kotlin.math.abs(faceCenterX - centerX) / imageWidth
             val offsetY = kotlin.math.abs(faceCenterY - centerY) / imageHeight
-            
+
             // 对于身份证照片，允许人脸稍微偏离中心，但不要太远
             if (offsetX > 0.4 || offsetY > 0.4) {
                 Log.d(tag, "过滤：位置偏离中心 offsetX=$offsetX, offsetY=$offsetY")
@@ -230,7 +229,7 @@ class FaceDetector(private val context: Context) {
             } else {
                 Size(30.0, 30.0)
             }
-            
+
             val maxSize = if (strictMode) {
                 val maxFaceSize = (minOf(mat.width(), mat.height()) * 0.6).toDouble()
                 Size(maxFaceSize, maxFaceSize)
@@ -297,7 +296,7 @@ class FaceDetector(private val context: Context) {
     fun preprocessFace(faceMat: Mat, targetSize: Size = Size(100.0, 100.0)): Mat {
         val resized = Mat()
         Imgproc.resize(faceMat, resized, targetSize)
-        
+
         // 转换为灰度图（如果还不是）
         val gray = Mat()
         if (resized.channels() == 3) {
@@ -307,14 +306,14 @@ class FaceDetector(private val context: Context) {
         } else {
             resized.copyTo(gray)
         }
-        
+
         // 直方图均衡化
         val equalized = Mat()
         Imgproc.equalizeHist(gray, equalized)
-        
+
         resized.release()
         gray.release()
-        
+
         return equalized
     }
 }
