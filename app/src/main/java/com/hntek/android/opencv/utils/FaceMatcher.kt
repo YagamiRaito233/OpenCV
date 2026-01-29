@@ -12,13 +12,13 @@ import com.hntek.android.opencv.utils.FaceVerificationResult
  */
 class FaceMatcher {
     private val tag = "FaceMatcher"
-
+    
     // 验证阈值配置（已调整，平衡安全性和通过率）
     var weightedThreshold: Double = 0.65  // 加权分阈值（降低以允许本人通过）
     var cosineMinThreshold: Double = 0.60  // 余弦相似度最低要求（降低）
     var euclideanMinThreshold: Double = 0.45  // 欧氏相似度最低要求（降低）
     var scoreDiffMaxThreshold: Double = 0.35  // 分数差异最大允许值（放宽，因为两种算法差异可能较大）
-
+    
     // 高置信度阈值（如果加权分很高，可以放宽其他条件）
     var highConfidenceThreshold: Double = 0.80  // 高置信度阈值
 
@@ -33,21 +33,21 @@ class FaceMatcher {
             val lbpFeatures = calculateLBPHistogram(faceMat)
             val grayFeatures = calculateGrayHistogram(faceMat)
             val regionFeatures = calculateRegionFeatures(faceMat)
-
+            
             // 合并特征向量
             val combinedFeatures = combineFeatures(lbpFeatures, grayFeatures, regionFeatures)
-
+            
             lbpFeatures.release()
             grayFeatures.release()
             regionFeatures.release()
-
+            
             combinedFeatures
         } catch (e: Exception) {
             Log.e(tag, "特征提取失败: ${e.message}", e)
             null
         }
     }
-
+    
     /**
      * 计算灰度直方图特征
      */
@@ -55,41 +55,41 @@ class FaceMatcher {
         val histogram = IntArray(256) { 0 }
         val rows = mat.rows()
         val cols = mat.cols()
-
+        
         for (i in 0 until rows) {
             for (j in 0 until cols) {
                 val grayValue = mat.get(i, j)[0].toInt()
                 histogram[grayValue]++
             }
         }
-
+        
         // 归一化
         val total = histogram.sum().toFloat()
         val normalizedHistogram = FloatArray(256) { i ->
             if (total > 0) histogram[i] / total else 0f
         }
-
+        
         return MatOfFloat(*normalizedHistogram)
     }
-
+    
     /**
      * 计算区域特征（将人脸分为多个区域，分别提取特征）
      */
     private fun calculateRegionFeatures(mat: Mat): MatOfFloat {
         val rows = mat.rows()
         val cols = mat.cols()
-
+        
         // 将人脸分为9个区域（3x3网格）
         val regionSize = 3
         val features = mutableListOf<Float>()
-
+        
         for (ri in 0 until regionSize) {
             for (rj in 0 until regionSize) {
                 val startRow = (ri * rows) / regionSize
                 val endRow = ((ri + 1) * rows) / regionSize
                 val startCol = (rj * cols) / regionSize
                 val endCol = ((rj + 1) * cols) / regionSize
-
+                
                 // 计算该区域的平均灰度值
                 var sum = 0.0
                 var count = 0
@@ -101,7 +101,7 @@ class FaceMatcher {
                 }
                 val mean = if (count > 0) (sum / count).toFloat() else 0f
                 features.add(mean / 255.0f) // 归一化到0-1
-
+                
                 // 计算该区域的方差
                 var variance = 0.0
                 for (i in startRow until endRow) {
@@ -114,10 +114,10 @@ class FaceMatcher {
                 features.add(stdDev / 255.0f) // 归一化到0-1
             }
         }
-
+        
         return MatOfFloat(*features.toFloatArray())
     }
-
+    
     /**
      * 合并多个特征向量
      */
@@ -236,25 +236,25 @@ class FaceMatcher {
      */
     private fun detectAnomalies(features: MatOfFloat): Boolean {
         val array = features.toArray()
-
+        
         // 检查NaN或无穷大
         if (array.any { it.isNaN() || it.isInfinite() }) {
             Log.w(tag, "特征向量包含NaN或无穷大值")
             return true
         }
-
+        
         // 检查特征范数是否在合理范围
         var normSquared = 0.0
         for (value in array) {
             normSquared += value * value
         }
         val norm = sqrt(normSquared)
-
+        
         if (norm < 0.1 || norm > 10.0) {
             Log.w(tag, "特征向量范数异常: $norm")
             return true
         }
-
+        
         return false
     }
 
@@ -304,51 +304,61 @@ class FaceMatcher {
             // 1. 基础相似度计算
             val cosineSim = calculateCosineSimilarity(features1, features2)
             val euclideanSim = calculateEuclideanDistance(features1, features2)
-
+            
             // 2. 加权分数
             val weightedScore = cosineSim * 0.7 + euclideanSim * 0.3
-
+            
             // 3. 多重条件验证（灵活策略，降低阈值以提高通过率）
             val checks = mutableMapOf<String, Boolean>()
             val scoreDiffValue = kotlin.math.abs(cosineSim - euclideanSim)
-
+            
             // 条件1：加权分必须达标
             val check1 = weightedScore >= weightedThreshold
             checks["weightedScore"] = check1
-
+            
             // 条件2：余弦相似度单项最低要求
             val check2 = cosineSim >= cosineMinThreshold
             checks["cosineMin"] = check2
-
+            
             // 条件3：欧氏相似度单项最低要求
             val check3 = euclideanSim >= euclideanMinThreshold
             checks["euclideanMin"] = check3
-
+            
             // 条件4：分数差异限制（防止单项异常）
             val check4 = scoreDiffValue < scoreDiffMaxThreshold
             checks["scoreDiff"] = check4
-
-            // 4. 灵活的综合判断策略（降低要求，让本人更容易通过）
-            // 如果加权分很高，放宽其他条件；否则需要更多条件满足
-            val isPassResult = if (weightedScore >= highConfidenceThreshold) {
-                // 高置信度：直接返回 true
-                check1
-            } else if (weightedScore >= (weightedThreshold + 0.05)) {
-                // 中等置信度：两个单项都达标
-                check2 && check3
-            } else {
-                // 普通情况：需要加权分和至少两个其他条件满足
-                check1 && ((check2 && check3) || (check2 && check4) || (check3 && check4))
+            
+            // 4. 综合判断策略（严谨的分级验证）
+            // 根据加权分的高低，采用不同的验证策略，避免逻辑重合
+            val isPassResult = when {
+                // 策略1：超高置信度（加权分 >= 0.80）
+                // 要求：加权分达标 + 至少一个单项达标（但不能两个都太低）
+                weightedScore >= highConfidenceThreshold -> {
+                    val bothLow = cosineSim < (cosineMinThreshold + 0.05) && euclideanSim < (euclideanMinThreshold + 0.05)
+                    (check2 || check3) && !bothLow  // 至少一个达标，且不能两个都很低
+                }
+                
+                // 策略2：高置信度（0.70 <= 加权分 < 0.80）
+                // 要求：加权分达标 + 两个单项都达标
+                weightedScore >= (weightedThreshold + 0.05) -> {
+                    check2 && check3  // 两个单项都必须达标
+                }
+                
+                // 策略3：普通置信度（0.65 <= 加权分 < 0.70）
+                // 要求：加权分达标 + 两个单项都达标 + 分数差异不能太大
+                else -> {
+                    check2 && check3 && check4  // 所有条件都必须满足
+                }
             }
             val passedCount = checks.values.count { it }
             val isPass = isPassResult
-
+            
             Log.d(tag, "验证结果: 通过=$isPass, 加权分=$weightedScore, 余弦=$cosineSim, 欧氏=$euclideanSim, " +
                     "分数差异=$scoreDiffValue, 通过检查=$passedCount/${checks.size}")
-
+            
             features1.release()
             features2.release()
-
+            
             FaceVerificationResult(
                 isPass = isPass,
                 confidence = weightedScore,
