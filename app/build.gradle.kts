@@ -39,20 +39,6 @@ android {
     }
 }
 
-repositories {
-    maven { url = uri("https://maven.aliyun.com/repository/public") }
-    maven { url = uri("https://maven.aliyun.com/repository/google") }
-    google()
-    mavenCentral()
-    maven {
-        url = uri("https://packages.aliyun.com/5fe195deedbcb529c62883a6/maven/repo-zahfn")
-        credentials {
-            username = project.findProperty("MAVEN_USERNAME") as String? ?: ""
-            password = project.findProperty("MAVEN_PASSWORD") as String? ?: ""
-        }
-    }
-}
-
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -79,10 +65,5 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
-
-    // TensorFlow Lite
-    implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.gpu)
-    implementation(libs.tensorflow.lite.support)
 
 }

@@ -37,13 +37,6 @@ android {
     }
 }
 
-repositories {
-    maven { url = uri("https://maven.aliyun.com/repository/public") }
-    maven { url = uri("https://maven.aliyun.com/repository/google") }
-    google()
-    mavenCentral()
-}
-
 dependencies {
     // OpenCV依赖
     implementation(project(":opencv"))
