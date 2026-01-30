@@ -12,28 +12,28 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.camera.view.PreviewView
 import com.hntek.android.opencv.camera.CameraManager
-import com.hntek.android.opencv.camera.FrameProcessor
-import com.hntek.android.opencv.utils.FaceDetector
-import com.hntek.android.opencv.utils.FaceMatcher
-import com.hntek.android.opencv.utils.OpenCVHelper
-import com.hntek.android.opencv.utils.FaceVerificationResult
+import com.hntek.android.opencv_face_sdk.FaceSDK
+import com.hntek.android.opencv_face_sdk.FrameProcessResult
+import com.hntek.android.opencv_face_sdk.IdCardDetectionResult
 import java.io.InputStream
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 人脸比对主界面
+ * 作为调用方示例，使用FaceSDK进行人脸检测和比对
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,22 +41,24 @@ fun FaceComparisonScreen() {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     
-    // OpenCV初始化状态
-    var openCVInitialized by remember { mutableStateOf(false) }
+    // SDK初始化状态
+    var sdkInitialized by remember { mutableStateOf(false) }
     
     // 身份证照片
     var idCardBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var idCardDetectionResult by remember { mutableStateOf<IdCardDetectionResult?>(null) }
 
     // 比对结果（用于稳定显示）
     var displayedSimilarity by remember { mutableStateOf<Double?>(null) }
     var isMatching by remember { mutableStateOf(false) }
-    var verificationResult by remember { mutableStateOf<FaceVerificationResult?>(null) }
+    var verificationResult by remember { mutableStateOf<com.hntek.android.opencv_face_sdk.utils.FaceVerificationResult?>(null) }
     
     // 检测到的人脸数量（稳定显示，避免闪烁）
     var detectedFaceCount by remember { mutableStateOf(0) }
-    
-    // 用于防抖的临时状态
     var tempFaceCount by remember { mutableStateOf(0) }
+    
+    // 连续通过的帧数
+    var continuousPassFrames by remember { mutableStateOf(0) }
     
     // 取景框区域（相对于预览View）
     var viewportRect by remember { mutableStateOf<android.graphics.Rect?>(null) }
@@ -65,74 +67,55 @@ fun FaceComparisonScreen() {
     // 预览View
     val previewView = remember { PreviewView(context) }
     
-    // 工具类实例（延迟创建，等待OpenCV初始化完成）
-    var faceDetector by remember { mutableStateOf<FaceDetector?>(null) }
-    var faceMatcher by remember { mutableStateOf<FaceMatcher?>(null) }
-    
-    // 相机管理器和帧处理器
+    // 相机管理器
     var cameraManager by remember { mutableStateOf<CameraManager?>(null) }
-    var frameProcessor by remember { mutableStateOf<FrameProcessor?>(null) }
     
-    // 初始化OpenCV
+    // 初始化SDK
     LaunchedEffect(Unit) {
-        openCVInitialized = OpenCVHelper.init(context)
-        if (openCVInitialized) {
-            // OpenCV初始化完成后，再创建依赖OpenCV的工具类
-            faceDetector = FaceDetector(context)
-            faceMatcher = FaceMatcher()
-            
+        sdkInitialized = FaceSDK.init(context)
+        if (sdkInitialized) {
             cameraManager = CameraManager(context, previewView, lifecycleOwner)
-            frameProcessor = FrameProcessor(faceDetector!!, faceMatcher!!)
             
-            // 设置帧处理回调：使用新的多重条件验证结果
-            frameProcessor?.onVerificationResult = { result ->
-                if (result.confidence.isFinite() && result.confidence >= 0.0) {
-                    // 轻量平滑（EMA），让数值更稳定
-                    displayedSimilarity = if (displayedSimilarity == null) {
-                        result.confidence
-                    } else {
-                        displayedSimilarity!! * 0.7 + result.confidence * 0.3
+            // 设置帧处理回调
+            cameraManager?.onFrameProcessed = { bitmap ->
+                // 调用SDK处理帧
+                val result = FaceSDK.getInstance().processFrame(bitmap)
+                
+                // 更新UI状态
+                tempFaceCount = if (result.faceDetected) result.faceCount else 0
+                
+                if (result.faceDetected && result.faceCount == 1) {
+                    // 更新相似度显示
+                    result.verificationResult?.let { vr ->
+                        if (vr.confidence.isFinite() && vr.confidence >= 0.0) {
+                            displayedSimilarity = if (displayedSimilarity == null) {
+                                vr.confidence
+                            } else {
+                                displayedSimilarity!! * 0.7 + vr.confidence * 0.3
+                            }
+                            isMatching = result.isMatch
+                            verificationResult = vr
+                        }
                     }
-                    // 使用多重条件验证的结果
-                    isMatching = result.isPass
-                    verificationResult = result
-                }
-            }
-            
-            // 向后兼容：保留旧的回调
-            frameProcessor?.onComparisonResult = { similarity ->
-                if (similarity.isFinite() && similarity >= 0.0) {
-                    // 轻量平滑（EMA），让数值更稳定
-                    displayedSimilarity = if (displayedSimilarity == null) {
-                        similarity
-                    } else {
-                        displayedSimilarity!! * 0.7 + similarity * 0.3
+                    
+                    // 更新连续通过的帧数
+                    continuousPassFrames = FaceSDK.getInstance().getContinuousPassFrames()
+                } else {
+                    // 未检测到人脸或检测到多个人脸，延迟清空显示
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        delay(600)
+                        if (tempFaceCount == 0 || tempFaceCount != 1) {
+                            displayedSimilarity = null
+                            isMatching = false
+                            continuousPassFrames = 0
+                        }
                     }
-                    // 使用FrameProcessor中的阈值进行判断（向后兼容）
-                    val threshold = frameProcessor?.similarityThreshold ?: 0.75
-                    isMatching = (displayedSimilarity ?: similarity) >= threshold
                 }
-            }
-            
-            frameProcessor?.onFaceDetected = { faces ->
-                // 更新临时人脸数量
-                tempFaceCount = faces.size
             }
             
             // 启动相机
-            cameraManager?.onFrameProcessed = { mat ->
-                val processedMat = frameProcessor?.processFrame(mat)
-                processedMat?.release()
-            }
-            
             cameraManager?.startCamera()
         }
-    }
-
-    // 取景框尺寸会在布局完成后才有值；这里随时同步到 FrameProcessor，避免一直用 null / 旧值
-    LaunchedEffect(frameProcessor, viewportRect, previewSize) {
-        frameProcessor?.viewportRect = viewportRect
-        frameProcessor?.previewSize = previewSize
     }
     
     // 使用防抖机制稳定更新人脸数量显示
@@ -140,26 +123,17 @@ fun FaceComparisonScreen() {
         delay(200) // 200ms防抖延迟
         detectedFaceCount = tempFaceCount
     }
-
-    // 相似度显示也做“延迟清空”，短暂丢帧不闪烁
-    LaunchedEffect(detectedFaceCount, frameProcessor?.idCardFaceCount) {
-        val idCount = frameProcessor?.idCardFaceCount ?: 0
-        if (detectedFaceCount == 0 || idCount != 1) {
-            delay(600) // 600ms 保护时间
-            val idCount2 = frameProcessor?.idCardFaceCount ?: 0
-            if (detectedFaceCount == 0 || idCount2 != 1) {
-                displayedSimilarity = null
-                isMatching = false
-            }
-        }
-    }
     
+    // 取景框尺寸会在布局完成后才有值；这里随时同步到SDK，避免一直用null/旧值
+    LaunchedEffect(viewportRect, previewSize) {
+        FaceSDK.getInstance().setViewport(viewportRect, previewSize)
+    }
+
     // 清理资源
     DisposableEffect(Unit) {
         onDispose {
             cameraManager?.stopCamera()
-            frameProcessor?.release()
-            faceMatcher?.release()
+            FaceSDK.release()
         }
     }
     
@@ -174,7 +148,15 @@ fun FaceComparisonScreen() {
                 inputStream?.close()
                 
                 idCardBitmap = bitmap
-                frameProcessor?.setIdCardImage(bitmap)
+                
+                // 调用SDK设置身份证照片
+                val result = FaceSDK.getInstance().setIdCardImage(bitmap)
+                idCardDetectionResult = result
+                
+                if (!result.success) {
+                    // 显示错误信息
+                    android.util.Log.e("FaceComparisonScreen", "设置身份证照片失败: ${result.errorMessage}")
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -195,15 +177,19 @@ fun FaceComparisonScreen() {
             )
         )
         
-        if (!openCVInitialized) {
-            // OpenCV初始化中
+        if (!sdkInitialized) {
+            // SDK初始化中
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("正在初始化OpenCV...")
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator()
+                    Text("正在初始化SDK...")
+                }
             }
         } else {
             // 主内容区域
@@ -293,8 +279,8 @@ fun FaceComparisonScreen() {
                         }
                     }
                     
-                    // 显示比对结果覆盖层：取景框内有人脸时持续显示（有值则显示百分比）
-                    val idCardFaceCountForUi = frameProcessor?.idCardFaceCount ?: 0
+                    // 显示比对结果覆盖层
+                    val idCardFaceCountForUi = idCardDetectionResult?.faceCount ?: 0
                     if (detectedFaceCount > 0 && idCardFaceCountForUi == 1) {
                         Card(
                             modifier = Modifier
@@ -322,20 +308,19 @@ fun FaceComparisonScreen() {
                                     style = MaterialTheme.typography.headlineMedium,
                                     color = Color.White
                                 )
-                                // 显示验证详情（如果有多重条件验证结果）
+                                // 显示连续通过的帧数
+                                Text(
+                                    text = "连续通过: $continuousPassFrames/5",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.8f)
+                                )
+                                // 显示验证详情
                                 verificationResult?.let { result ->
                                     Text(
                                         text = "检查: ${result.passedChecks}/${result.totalChecks}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color.White.copy(alpha = 0.8f)
                                     )
-                                    if (!result.isPass && result.passedChecks < result.totalChecks) {
-                                        Text(
-                                            text = "未通过条件验证",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color.White.copy(alpha = 0.7f)
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -377,7 +362,7 @@ fun FaceComparisonScreen() {
                     }
                 }
                 
-                // 状态信息（持续显示，不闪烁）
+                // 状态信息
                 Text(
                     text = if (detectedFaceCount > 0) {
                         "检测到 $detectedFaceCount 个人脸"
@@ -388,18 +373,15 @@ fun FaceComparisonScreen() {
                     style = MaterialTheme.typography.bodyMedium
                 )
                 
-                // 显示身份证照片人脸数量
-                if (idCardBitmap != null) {
-                    val idCardFaceCount = frameProcessor?.idCardFaceCount ?: 0
+                // 显示身份证照片检测结果
+                idCardDetectionResult?.let { result ->
                     Text(
-                        text = if (idCardFaceCount == 1) {
-                            "身份证照片：检测到 1 个人脸"
-                        } else if (idCardFaceCount > 1) {
-                            "身份证照片：检测到 $idCardFaceCount 个人脸（需要1个）"
+                        text = if (result.success) {
+                            "身份证照片：检测到 ${result.faceCount} 个人脸 ✓"
                         } else {
-                            "身份证照片：未检测到人脸"
+                            "身份证照片：${result.errorMessage ?: "检测失败"}"
                         },
-                        color = if (idCardFaceCount == 1) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                        color = if (result.success) Color(0xFF4CAF50) else Color(0xFFFF9800),
                         style = MaterialTheme.typography.bodySmall
                     )
                 }

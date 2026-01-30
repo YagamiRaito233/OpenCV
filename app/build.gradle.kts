@@ -39,6 +39,20 @@ android {
     }
 }
 
+repositories {
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
+    maven { url = uri("https://maven.aliyun.com/repository/google") }
+    google()
+    mavenCentral()
+    maven {
+        url = uri("https://packages.aliyun.com/5fe195deedbcb529c62883a6/maven/repo-zahfn")
+        credentials {
+            username = project.findProperty("MAVEN_USERNAME") as String? ?: ""
+            password = project.findProperty("MAVEN_PASSWORD") as String? ?: ""
+        }
+    }
+}
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -57,8 +71,8 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    // OpenCV 依赖
-    implementation(project(":opencv"))
+    // 人脸识别SDK依赖
+    implementation(libs.opencv.aar)
     
     // CameraX 依赖
     implementation(libs.androidx.camera.core)

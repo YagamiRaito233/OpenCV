@@ -10,12 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,13 +41,12 @@ class MainActivity : ComponentActivity() {
 
                 val permissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestMultiplePermissions()
-                ) { // 当函数的最后一个参数是 Lambda 表达式时，可以将 Lambda 写在圆括号外面
-                    permissions ->
-                    val allGranted = permissions.values.all { it } // true && true && false == false
+                ) { permissions ->
+                    val allGranted = permissions.values.all { it }
                     if (allGranted) {
-                        Log.i("permission", "all accepted");
+                        Log.i("permission", "all accepted")
                     } else {
-                        Log.i("permission", "not all accepted");
+                        Log.i("permission", "not all accepted")
                     }
                 }
 
@@ -65,14 +59,6 @@ class MainActivity : ComponentActivity() {
                 } else {
                     PermissionRequestScreen(
                         onRequestPermissions = {
-                            // contract = ActivityResultContracts.RequestMultiplePermissions()，launch 的是系统权限对话框
-                            // 传入参数定义：
-                            // class RequestMultiplePermissions :
-                            //        ActivityResultContract<Array<String>, Map<String, @JvmSuppressWildcards Boolean>>() {
-                            //            internal fun createIntent(input: Array<String>): Intent {
-                            //                return Intent(ACTION_REQUEST_PERMISSIONS).putExtra(EXTRA_PERMISSIONS, input)
-                            //            }
-                            //        }
                             permissionLauncher.launch(requiredPermissions)
                         }
                     )
@@ -86,7 +72,7 @@ class MainActivity : ComponentActivity() {
 fun PermissionRequestScreen(
     onRequestPermissions: () -> Unit
 ) {
-    Box(
+    androidx.compose.foundation.layout.Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {

@@ -9,8 +9,6 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import org.opencv.android.Utils
-import org.opencv.core.Mat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -29,7 +27,7 @@ class CameraManager(
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     
     var onImageCaptured: ((Bitmap) -> Unit)? = null
-    var onFrameProcessed: ((Mat) -> Unit)? = null
+    var onFrameProcessed: ((Bitmap) -> Unit)? = null
 
     /**
      * 启动相机预览
@@ -83,7 +81,6 @@ class CameraManager(
                         break
                     } catch (exc: Exception) {
                         Log.w(tag, "尝试使用选择器失败: ${cameraSelector}, 错误: ${exc.message}")
-                        // 继续尝试下一个选择器
                     }
                 }
 
@@ -105,7 +102,7 @@ class CameraManager(
             // 将ImageProxy转换为Bitmap
             val bitmap = imageProxyToBitmap(imageProxy)
 
-            // 旋转到与PreviewView一致的方向（否则取景框过滤/检测坐标会错位）
+            // 旋转到与PreviewView一致的方向
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
             val rotatedBitmap = if (rotationDegrees != 0) {
                 rotateBitmap(bitmap, rotationDegrees)
@@ -113,12 +110,8 @@ class CameraManager(
                 bitmap
             }
             
-            // 转换为Mat
-            val mat = Mat()
-            Utils.bitmapToMat(rotatedBitmap, mat)
-            
             // 通知外部处理
-            onFrameProcessed?.invoke(mat)
+            onFrameProcessed?.invoke(rotatedBitmap)
             
             // 如果需要保存图像
             onImageCaptured?.invoke(rotatedBitmap)
@@ -181,72 +174,5 @@ class CameraManager(
     fun stopCamera() {
         cameraExecutor.shutdown()
         imageAnalysis?.clearAnalyzer()
-    }
-
-    /**
-     * 拍照
-     */
-    fun takePicture(onPictureTaken: (Bitmap) -> Unit) {
-        val imageCapture = ImageCapture.Builder()
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-            .build()
-
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-        cameraProviderFuture.addListener({
-            try {
-                val cameraProvider = cameraProviderFuture.get()
-                
-                // 尝试选择摄像头，按优先级：前置 -> 后置
-                val cameraSelectors = listOf(
-                    CameraSelector.DEFAULT_FRONT_CAMERA,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                )
-
-                cameraProvider.unbindAll()
-                
-                var cameraBound = false
-                for (cameraSelector in cameraSelectors) {
-                    try {
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            imageCapture
-                        )
-                        cameraBound = true
-                        break
-                    } catch (exc: Exception) {
-                        Log.w(tag, "拍照时尝试使用选择器失败: ${cameraSelector}, 错误: ${exc.message}")
-                    }
-                }
-                
-                if (!cameraBound) {
-                    Log.e(tag, "拍照时所有相机选择器都失败")
-                    return@addListener
-                }
-
-                val outputFileOptions = ImageCapture.OutputFileOptions.Builder(
-                    java.io.File(context.getExternalFilesDir(null), "capture.jpg")
-                ).build()
-
-                imageCapture.takePicture(
-                    outputFileOptions,
-                    ContextCompat.getMainExecutor(context),
-                    object : ImageCapture.OnImageSavedCallback {
-                        override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                            // 从文件读取Bitmap
-                            val file = java.io.File(context.getExternalFilesDir(null), "capture.jpg")
-                            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                            onPictureTaken(bitmap)
-                        }
-
-                        override fun onError(exception: ImageCaptureException) {
-                            Log.e(tag, "拍照失败: ${exception.message}", exception)
-                        }
-                    }
-                )
-            } catch (e: Exception) {
-                Log.e(tag, "拍照异常: ${e.message}", e)
-            }
-        }, ContextCompat.getMainExecutor(context))
     }
 }
